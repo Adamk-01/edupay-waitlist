@@ -23,7 +23,7 @@ Open http://localhost:3000.
 ## Frontend routes
 
 - `/` — landing page and waitlist form
-- `/verify` — verification instructions; with `?token=…` it confirms the token and renders verified, expired or invalid. `noindex`.
+- `/verify` — verification instructions; with `?token=…` it confirms the token and renders verified, expired or invalid. Also carries the optional WhatsApp Channel invitation so a new subscriber has a next step while waiting. `noindex`.
 - `/success` — display-only post-verification content and optional official WhatsApp Channel link; it must only be surfaced after the backend confirms verification. `noindex`.
 - `/privacy` — transparent pre-launch waitlist privacy notice; not yet approved for production
 
@@ -86,8 +86,24 @@ supabase secrets set RESEND_API_KEY=...            # required for mail to actual
 ```
 
 Required secrets: `RESEND_API_KEY`, `WAITLIST_SITE_URL`, `WAITLIST_ALLOWED_ORIGINS`,
-`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`. Without `RESEND_API_KEY` the flow still works —
-signups are stored and the verification link is written to the function logs, but no email is sent.
+`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`, `WAITLIST_NOTIFY_EMAIL`. Without `RESEND_API_KEY`
+the flow still works — signups are stored and the email content is written to the function logs —
+but no mail leaves the server.
+
+### Team notification email
+
+Every **new** signup is forwarded to the address in `WAITLIST_NOTIFY_EMAIL` (currently
+`alphaphysicseduconsult@gmail.com`) so submissions can be seen without database access. The message
+lists the submitted fields, the notice version and the timestamp, and all values are HTML-escaped.
+
+It fires only for genuinely new registrations — duplicates, resends and verification attempts return
+earlier — so repeat submissions cannot flood the inbox.
+
+> **Privacy:** this sends personal data (name, email, phone, school or institution) to a third-party
+> mailbox outside the application database. Whoever controls that mailbox is effectively a recipient
+> of waitlist data, so it must be named in the approved privacy notice, secured with MFA, and the
+> emails deleted when they are no longer needed. If that is not acceptable, unset
+> `WAITLIST_NOTIFY_EMAIL` — the function logs a warning and carries on.
 
 The waitlist tables have RLS enabled with **no policies**, so the anon and authenticated roles are
 denied every operation; only the service role inside the edge function can read or write them.
@@ -96,6 +112,10 @@ denied every operation; only the service role inside the edge function can read 
 
 - Replace the pre-launch privacy notice with approved policy content and complete the outstanding privacy details.
 - Obtain legal review of age thresholds and parental/guardian consent for student registrations, including minors.
+- Name every recipient of waitlist data in the privacy notice, including the
+  `WAITLIST_NOTIFY_EMAIL` inbox that receives a copy of each signup.
+- Confirm the hero screenshots in `public/` are approved product imagery and contain no real
+  customer data (names, phone numbers, balances, order references).
 - Confirm opt-in and unsubscribe behavior for launch emails.
 - Set `NEXT_PUBLIC_EDUPAY_API_URL` in the hosting environment. Until it is set, registration stays
   switched off and no visitor data is transmitted, so this is the switch that goes live last.

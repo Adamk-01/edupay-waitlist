@@ -40,6 +40,26 @@ The four P0 items have been implemented and verified. Marked ✅ below.
 | F-9 · `/success` indexable | ✅ **Resolved** | `noindex, nofollow` on `/success` and `/verify`. |
 | F-15 · hard-coded `/verify` redirect | ✅ **Resolved** | `registerWaitlist()` now returns a discriminated result and the form routes on `already_verified` vs `pending_verification` via `router.push()`. |
 
+## Remediation status (second pass, same day)
+
+| Finding | Status | What was done |
+| --- | --- | --- |
+| F-5 · decorative icons exposed | ✅ **Resolved** | 32 of 37 SVGs now carry `aria-hidden`; the remaining 5 sit inside an `aria-hidden` mockup container. The `Logo` gained a `decorative` prop so no focusable link is ever hidden inside one. |
+| F-6 · six contrast failures | ✅ **Resolved** | All six pairs recomputed and replaced: `--muted` #68758a→#5c6878 (4.46→5.41), eyebrow #a76b21→#8a5615 (4.20→5.86), WhatsApp button #159b60→#0f7d4c (3.57→5.17), WhatsApp fine print (4.18→5.25), mockup sub-text (3.24→4.54). Supporting copy moved off 10–12 px. |
+| F-7 · no mobile navigation | ✅ **Resolved** | Real menu in `src/components/site-nav.tsx`: button owns expanded state, `aria-expanded`/`aria-controls`, Escape closes and restores focus, click-outside closes, panel is `hidden` while closed. |
+| F-8 · SEO foundations | 🟡 **Mostly** | `robots.ts`, `sitemap.ts` and a canonical URL added on top of the earlier icon and per-route titles. An OG image is still outstanding. |
+| F-11 · mockup copy exposed | ✅ **Resolved** | `.feature-visual` is `aria-hidden`. |
+| F-12 · audience switch wipes input | ✅ **Resolved** | Audience-specific fields are now controlled and their values survive switching, while unmounted fields still stay out of the submitted `FormData`. |
+| F-1 · hero showed invented content | ✅ **Resolved** | The CSS-built phones advertised a fake ₦12,500 wallet balance and fake order cards. Replaced with two real 562×1280 app screenshots via `next/image`, frames resized to the 1:2.28 ratio, notch removed. |
+
+**New capabilities added on request**
+
+- **Team notification email** — every new signup is forwarded to `WAITLIST_NOTIFY_EMAIL`
+  (`alphaphysicseduconsult@gmail.com`) with all fields HTML-escaped. Fires only for new
+  registrations, never for duplicates or resends.
+- **WhatsApp placeholder** — shown immediately after a submission on `/verify`, and reused on
+  `/success`, so a new subscriber gets an optional next step while waiting.
+
 **Residual risk after this pass**
 
 - `npm audit` reports **6 moderate, dev-only** advisories (minimatch via `@typescript-eslint`). They
@@ -51,8 +71,15 @@ The four P0 items have been implemented and verified. Marked ✅ below.
   directly: a valid insert succeeds, and an insert with `waitlist_consent = false` is rejected by
   the check constraint. Run a live signup with the URL set before announcing the waitlist.
 - **Verification emails will not send yet** — `RESEND_API_KEY` is not configured. Until it is, the
-  function stores the signup and logs the verification link instead of mailing it.
-- The accessibility and SEO findings (F-5, F-6, F-7, F-8 remainder, F-10…F-22) are untouched.
+  function stores the signup and logs the verification link instead of mailing it. The same applies
+  to the team notification.
+- **Waitlist data is emailed to a personal Gmail address** (`alphaphysicseduconsult@gmail.com`). That
+  mailbox is a recipient of personal data, so it must be named in the approved privacy notice and
+  secured with MFA. See the note in `README.md`.
+- **The hero screenshots are unverified** — they were supplied as images and their content was not
+  inspected. Confirm they are approved product imagery with no real customer data, and check the alt
+  text describes what each screen actually shows.
+- Outstanding: OG image, Google Fonts (`F-10`), and the lower-severity items `F-13`…`F-22`.
 
 ---
 

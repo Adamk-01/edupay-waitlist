@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import {
@@ -9,6 +9,8 @@ import {
   WaitlistAudience,
   WaitlistRegistrationInput
 } from "@/lib/waitlist-api";
+
+const EDUCATION_LEVELS = ["Primary", "Secondary school", "Undergraduate", "Postgraduate", "Other"];
 
 function normalizePhoneNumber(value: string): string | undefined | null {
   const phone = value.trim();
@@ -50,6 +52,20 @@ export function WaitlistForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submitting = useRef(false);
+
+  // The audience-specific fields unmount when the audience changes, which used
+  // to discard anything already typed into them. Holding their values here
+  // means switching back and forth keeps what was entered, while unmounted
+  // fields still stay out of the submitted FormData.
+  const [extra, setExtra] = useState<Record<string, string>>({});
+
+  function extraField(name: string) {
+    return {
+      value: extra[name] ?? "",
+      onChange: (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+        setExtra((previous) => ({ ...previous, [name]: event.target.value }))
+    };
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -136,17 +152,15 @@ export function WaitlistForm() {
           <>
             <label>
               School name
-              <input name="schoolName" placeholder="Your school" required maxLength={160} />
+              <input name="schoolName" {...extraField("schoolName")} placeholder="Your school" required maxLength={160} />
             </label>
             <label>
               Education level
-              <select name="educationLevel" defaultValue="" required>
+              <select name="educationLevel" {...extraField("educationLevel")} required>
                 <option value="" disabled>Choose level</option>
-                <option>Primary</option>
-                <option>Secondary school</option>
-                <option>Undergraduate</option>
-                <option>Postgraduate</option>
-                <option>Other</option>
+                {EDUCATION_LEVELS.map((level) => (
+                  <option key={level}>{level}</option>
+                ))}
               </select>
             </label>
           </>
@@ -154,13 +168,11 @@ export function WaitlistForm() {
         {audience === "parent_guardian" && (
           <label>
             Learner&apos;s education level <span className="optional">Optional</span>
-            <select name="educationLevel" defaultValue="">
+            <select name="educationLevel" {...extraField("educationLevel")}>
               <option value="">Choose level</option>
-              <option>Primary</option>
-              <option>Secondary school</option>
-              <option>Undergraduate</option>
-              <option>Postgraduate</option>
-              <option>Other</option>
+              {EDUCATION_LEVELS.map((level) => (
+                <option key={level}>{level}</option>
+              ))}
             </select>
           </label>
         )}
@@ -168,11 +180,11 @@ export function WaitlistForm() {
           <>
             <label>
               Institution name
-              <input name="institutionName" placeholder="Name of institution" required maxLength={160} />
+              <input name="institutionName" {...extraField("institutionName")} placeholder="Name of institution" required maxLength={160} />
             </label>
             <label>
               Institution type
-              <select name="institutionType" defaultValue="" required>
+              <select name="institutionType" {...extraField("institutionType")} required>
                 <option value="" disabled>Choose type</option>
                 <option>School</option>
                 <option>College / Polytechnic</option>
@@ -183,7 +195,7 @@ export function WaitlistForm() {
             </label>
             <label>
               Contact person&apos;s role
-              <input name="contactRole" placeholder="e.g. Administrator" required maxLength={100} />
+              <input name="contactRole" {...extraField("contactRole")} placeholder="e.g. Administrator" required maxLength={100} />
             </label>
           </>
         )}

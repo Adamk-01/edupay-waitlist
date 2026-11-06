@@ -12,6 +12,7 @@
 //   WAITLIST_ALLOWED_ORIGINS comma-separated CORS allowlist
 //   WAITLIST_NOTICE_VERSION  privacy notice version recorded with each consent
 //   WAITLIST_FROM_EMAIL      verified sender, e.g. "EduPay <no-reply@edupayafrica.com.ng>"
+//   WAITLIST_NOTIFY_EMAIL    team inbox that receives every new signup
 //   RESEND_API_KEY           email provider key
 //
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected automatically.
@@ -123,27 +124,33 @@ function siteUrl(): string {
 
 // ------------------------------------------------------------- email sending
 
-async function sendVerificationEmail(to: string, verifyUrl: string): Promise<boolean> {
+/** Visitor-supplied values are interpolated into HTML mail, so escape them. */
+function escapeHtml(value: unknown): string {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+/** Single place that talks to the email provider. Returns false if not sent. */
+async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
   const apiKey = Deno.env.get("RESEND_API_KEY");
   const from = Deno.env.get("WAITLIST_FROM_EMAIL") ?? "EduPay Waitlist <no-reply@edupayafrica.com.ng>";
 
-  const html = [
-    "<div style=\"font-family:Arial,sans-serif;color:#102443;line-height:1.6\">",
-    "<h2 style=\"margin:0 0 12px\">Confirm your EduPay waitlist registration</h2>",
-    "<p>Thank you for joining the EduPay waitlist. Please confirm your email address to complete your registration.</p>",
-    `<p><a href="${verifyUrl}" style="background:#ff941f;color:#14233a;padding:12px 20px;border-radius:999px;text-decoration:none;font-weight:bold;display:inline-block">Confirm my email</a></p>`,
-    `<p style="font-size:12px;color:#68758a">This link expires in ${TOKEN_TTL_MINUTES / 60} hours. If the button does not work, copy this address into your browser:<br>${verifyUrl}</p>`,
-    "<p style=\"font-size:12px;color:#68758a\">If you did not join the EduPay waitlist, you can ignore this email.</p>",
-    "</div>"
-  ].join("");
-
   if (!apiKey) {
     // Without a provider the flow still works end to end, but no mail leaves
-    // the server. The link is logged so it stays testable in staging.
-    console.warn("[waitlist] RESEND_API_KEY is not configured; verification email not sent", {
-      to,
-      verifyUrl
-    });
+    // the server. Content is logged so it stays testable in staging.
+    console.warn("[waitlist] RESEND_API_KEY is not configured; email not sent", { to, subject });
     return false;
   }
 
@@ -151,12 +158,7 @@ async function sendVerificationEmail(to: string, verifyUrl: string): Promise<boo
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: "Confirm your EduPay waitlist registration",
-        html
-      })
+      body: JSON.stringify({ from, to, subject, html })
     });
     if (!response.ok) {
       console.error("[waitlist] email provider rejected the request", response.status, await response.text());
@@ -167,6 +169,83 @@ async function sendVerificationEmail(to: string, verifyUrl: string): Promise<boo
     console.error("[waitlist] email send failed", error);
     return false;
   }
+}
+
+async function sendVerificationEmail(to: string, verifyUrl: string): Promise<boolean> {
+  const html = [
+    "<div style=\"font-family:Arial,sans-serif;color:#102443;line-height:1.6\">",
+    "<h2 style=\"margin:0 0 12px\">Confirm your EduPay waitlist registration</h2>",
+    "<p>Thank you for joining the EduPay waitlist. Please confirm your email address to complete your registration.</p>",
+    `<p><a href="${escapeHtml(verifyUrl)}" style="background:#ff941f;color:#14233a;padding:12px 20px;border-radius:999px;text-decoration:none;font-weight:bold;display:inline-block">Confirm my email</a></p>`,
+    `<p style="font-size:12px;color:#68758a">This link expires in ${TOKEN_TTL_MINUTES / 60} hours. If the button does not work, copy this address into your browser:<br>${escapeHtml(verifyUrl)}</p>`,
+    "<p style=\"font-size:12px;color:#68758a\">If you did not join the EduPay waitlist, you can ignore this email.</p>",
+    "</div>"
+  ].join("");
+
+  return await sendEmail(to, "Confirm your EduPay waitlist registration", html);
+}
+
+interface SignupSummary {
+  fullName: string;
+  email: string;
+  phone: string | null;
+  audience: Audience;
+  state: string | null;
+  schoolName: string | null;
+  educationLevel: string | null;
+  institutionName: string | null;
+  institutionType: string | null;
+  contactRole: string | null;
+  marketingConsent: boolean;
+}
+
+/**
+ * Forwards each new registration to the team inbox named by
+ * WAITLIST_NOTIFY_EMAIL so submissions are seen without database access.
+ *
+ * Only fired for genuinely new signups, never for resends or duplicate
+ * attempts, so the inbox is not flooded by repeat submissions.
+ */
+async function notifyTeam(signup: SignupSummary, noticeVersion: string): Promise<void> {
+  const to = Deno.env.get("WAITLIST_NOTIFY_EMAIL");
+  if (!to) {
+    console.warn("[waitlist] WAITLIST_NOTIFY_EMAIL is not set; no team notification sent");
+    return;
+  }
+
+  const rows: [string, unknown][] = [
+    ["Name", signup.fullName],
+    ["Email", signup.email],
+    ["Phone", signup.phone],
+    ["Audience", signup.audience],
+    ["State", signup.state],
+    ["School", signup.schoolName],
+    ["Education level", signup.educationLevel],
+    ["Institution", signup.institutionName],
+    ["Institution type", signup.institutionType],
+    ["Contact role", signup.contactRole],
+    ["Launch announcements", signup.marketingConsent ? "Opted in" : "Not opted in"],
+    ["Notice version", noticeVersion],
+    ["Submitted", new Date().toUTCString()]
+  ];
+
+  const table = rows
+    .map(
+      ([label, value]) =>
+        `<tr><th align="left" style="padding:5px 14px 5px 0;color:#5c6878;font-weight:600">${escapeHtml(label)}</th>` +
+        `<td style="padding:5px 0;color:#102443">${escapeHtml(value === null ? "Not provided" : value)}</td></tr>`
+    )
+    .join("");
+
+  const html = [
+    "<div style=\"font-family:Arial,sans-serif;color:#102443;line-height:1.6\">",
+    "<h2 style=\"margin:0 0 12px\">New EduPay waitlist signup</h2>",
+    `<table style="border-collapse:collapse;font-size:14px">${table}</table>`,
+    "<p style=\"font-size:12px;color:#5c6878;margin-top:20px\">This message contains personal data submitted through the EduPay waitlist form. Handle it in line with the EduPay privacy notice and do not forward it outside the team.</p>",
+    "</div>"
+  ].join("");
+
+  await sendEmail(to, `New EduPay waitlist signup — ${signup.fullName}`, html);
 }
 
 // ------------------------------------------------------------- rate limiting
@@ -388,6 +467,25 @@ async function handleRegister(
       last_verification_sent_at: sent ? nowIso : null
     })
     .eq("id", inserted.id);
+
+  // Forward the submission to the team inbox. Only new signups reach here —
+  // duplicates and resends return earlier, so the inbox is not flooded.
+  await notifyTeam(
+    {
+      fullName,
+      email,
+      phone: typeof phone === "string" ? phone : null,
+      audience,
+      state: typeof state === "string" ? state : null,
+      schoolName: audience === "student" && typeof schoolName === "string" ? schoolName : null,
+      educationLevel: typeof educationLevel === "string" ? educationLevel : null,
+      institutionName: audience === "institution" && typeof institutionName === "string" ? institutionName : null,
+      institutionType: audience === "institution" && typeof institutionType === "string" ? institutionType : null,
+      contactRole: audience === "institution" && typeof contactRole === "string" ? contactRole : null,
+      marketingConsent
+    },
+    noticeVersion
+  );
 
   return json({ status: "pending_verification" }, 201, origin);
 }
