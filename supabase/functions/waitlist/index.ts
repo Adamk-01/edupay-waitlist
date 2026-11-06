@@ -9,7 +9,7 @@
 //
 // Required secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   WAITLIST_SITE_URL        e.g. https://waitlist.edupayafrica.com.ng
-//   WAITLIST_ALLOWED_ORIGINS comma-separated CORS allowlist
+//   WAITLIST_ALLOWED_ORIGINS comma-separated CORS allowlist; supports "*" patterns
 //   WAITLIST_NOTICE_VERSION  privacy notice version recorded with each consent
 //   WAITLIST_FROM_EMAIL      verified sender, e.g. "EduPay <no-reply@edupayafrica.com.ng>"
 //   WAITLIST_NOTIFY_EMAIL    team inbox that receives every new signup
@@ -22,8 +22,20 @@
 //   - Only a SHA-256 hash of a verification token is stored.
 //   - Duplicate and unknown emails return the SAME response: no enumeration.
 //   - Internal errors are logged server-side and never returned to visitors.
-
-import { createClient } from "jsr:@supabase/supabase-js@2";
+//
+// IMPORTANT — this file has no imports on purpose.
+//
+// An earlier version imported "jsr:@supabase/supabase-js@2". That module could
+// not be resolved at cold start, so the function never booted: every request
+// returned {"code":"BOOT_ERROR"} before any handler ran. The failure looks
+// exactly like a CORS problem from the browser, which is why it was hard to
+// spot. Everything here talks to PostgREST and the mail provider over plain
+// fetch() instead. Please do not reintroduce an import: if this function needs
+// a new capability, prefer web-standard APIs already present in Deno.
+//
+// To verify a deployment is healthy, open the function URL in a browser tab.
+// A working function answers {"error":"method_not_allowed"}. Anything else,
+// and in particular BOOT_ERROR, means the code did not start.
 
 const AUDIENCES = ["student", "parent_guardian", "institution"] as const;
 const EDUCATION_LEVELS = ["Primary", "Secondary school", "Undergraduate", "Postgraduate", "Other"] as const;
@@ -42,25 +54,83 @@ const REGISTER_MAX_PER_EMAIL_PER_HOUR = 3;
 const RESEND_MAX_PER_EMAIL_PER_HOUR = 3;
 const MAX_BODY_BYTES = 8 * 1024;
 
+// How long a browser may cache a preflight response. Deliberately short: a
+// stale "allowed" decision used to stick for a full day and made configuration
+// changes look like they had not been applied.
+const CORS_MAX_AGE_SECONDS = 600;
+
 type Audience = (typeof AUDIENCES)[number];
-type SupabaseAdmin = ReturnType<typeof createClient>;
+type Row = Record<string, unknown>;
 
 // ----------------------------------------------------------------- utilities
 
-function baseHeaders(origin: string | null): HeadersInit {
-  const allowList = (Deno.env.get("WAITLIST_ALLOWED_ORIGINS") ?? Deno.env.get("WAITLIST_SITE_URL") ?? "")
+/**
+ * Encodes a value for use in a PostgREST query string.
+ *
+ * This protects the URL's query-string boundaries, including characters that
+ * encodeURIComponent leaves unescaped. PostgREST decodes the value before
+ * parsing its own filter syntax, so URL encoding alone is not a substitute for
+ * validating inputs or safely constructing more complex filter expressions.
+ */
+function enc(value: unknown): string {
+  return encodeURIComponent(String(value)).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+/**
+ * Matches an origin against one allowlist entry.
+ *
+ * An entry with no "*" must match byte for byte. An entry containing "*" is a
+ * pattern, which exists so generated deployment origins do not have to be
+ * listed one by one:
+ *
+ *   https://edupay-waitlist.vercel.app    exact production origin
+ *   https://edupay-waitlist-*.vercel.app  every Vercel preview for this project
+ *
+ * Wildcards match only characters within a single hostname label. Keep patterns
+ * narrow: a matching project name alone does not prove ownership of a Vercel
+ * deployment, so only enable preview patterns if you trust all matching hosts.
+ */
+function matchesOrigin(origin: string, pattern: string): boolean {
+  if (pattern === "*") return true;
+  if (!pattern.includes("*")) return pattern === origin;
+
+  // Restrict wildcard matches to a single DNS label, not dots, ports or paths.
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\\\*/g, "[a-zA-Z0-9-]*");
+  return new RegExp(`^${escaped}$`).test(origin);
+}
+
+function allowList(): string[] {
+  return (Deno.env.get("WAITLIST_ALLOWED_ORIGINS") ?? Deno.env.get("WAITLIST_SITE_URL") ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+}
 
-  // Never reflect an unrecognised origin.
-  const allowed = origin && allowList.includes(origin) ? origin : (allowList[0] ?? "");
+/**
+ * Resolves the value to send back in Access-Control-Allow-Origin.
+ *
+ * Only a concrete origin can be reflected, never the pattern that matched it,
+ * so an unrecognised origin falls back to the first exact entry. "Vary: Origin"
+ * is set on every response, which is what stops a shared cache from serving
+ * one origin's header to another.
+ */
+function resolveAllowedOrigin(origin: string | null, list: string[]): string {
+  if (origin && list.some((pattern) => matchesOrigin(origin, pattern))) return origin;
+  return list.find((pattern) => !pattern.includes("*")) ?? "";
+}
 
+function baseHeaders(origin: string | null): Record<string, string> {
+  const list = allowList();
   return {
-    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Origin": resolveAllowedOrigin(origin, list),
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Max-Age": "86400",
+    "Access-Control-Max-Age": String(CORS_MAX_AGE_SECONDS),
     Vary: "Origin",
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store"
@@ -122,6 +192,94 @@ function siteUrl(): string {
   return (Deno.env.get("WAITLIST_SITE_URL") ?? "https://waitlist.edupayafrica.com.ng").replace(/\/+$/, "");
 }
 
+// -------------------------------------------------------- database access
+
+/**
+ * Result of a PostgREST call.
+ *
+ * `count` is only populated for HEAD requests made with Prefer: count=exact.
+ * `rows` is null when the server returned no body (204 from PATCH/DELETE).
+ * `code` carries a Postgres SQLSTATE such as "23505" for a unique violation.
+ */
+interface RestResult {
+  status: number;
+  ok: boolean;
+  count: number | null;
+  rows: Row[] | null;
+  code: string | null;
+}
+
+function serviceKey(): string {
+  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+}
+
+function restUrl(path: string): string {
+  return `${Deno.env.get("SUPABASE_URL") ?? ""}/rest/v1${path}`;
+}
+
+/**
+ * The single place that talks to the database.
+ *
+ * Uses the service role key, which bypasses row-level security. That is
+ * required here — RLS deliberately allows no public access to these tables —
+ * so nothing visitor-supplied may ever reach `path` unescaped. Every dynamic
+ * value is passed through enc() by the callers below.
+ */
+async function rest(
+  method: "HEAD" | "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  options: { body?: unknown; prefer?: string } = {}
+): Promise<RestResult> {
+  const headers: Record<string, string> = {
+    apikey: serviceKey(),
+    Authorization: `Bearer ${serviceKey()}`,
+    "Content-Type": "application/json"
+  };
+  if (options.prefer) headers["Prefer"] = options.prefer;
+
+  const response = await fetch(restUrl(path), {
+    method,
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+
+  if (method === "HEAD") {
+    // PostgREST reports the total in Content-Range, e.g. "0-4/5" or "*/0".
+    const range = response.headers.get("content-range");
+    const total = range?.split("/")[1] ?? null;
+    return {
+      status: response.status,
+      ok: response.ok,
+      count: total && total !== "*" ? Number(total) : null,
+      rows: null,
+      code: null
+    };
+  }
+
+  const text = await response.text();
+  let parsed: unknown = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+  }
+
+  let code: string | null = null;
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "code" in parsed) {
+    code = String((parsed as { code: unknown }).code);
+  }
+
+  return {
+    status: response.status,
+    ok: response.ok,
+    count: null,
+    rows: Array.isArray(parsed) ? (parsed as Row[]) : parsed ? [parsed as Row] : null,
+    code
+  };
+}
+
 // ------------------------------------------------------------- email sending
 
 /** Visitor-supplied values are interpolated into HTML mail, so escape them. */
@@ -148,8 +306,8 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
   const from = Deno.env.get("WAITLIST_FROM_EMAIL") ?? "EduPay Waitlist <no-reply@edupayafrica.com.ng>";
 
   if (!apiKey) {
-    // Without a provider the flow still works end to end, but no mail leaves
-    // the server. Content is logged so it stays testable in staging.
+    // Without a provider no verification or notification email is sent.
+    // Do not log the verification link or email content.
     console.warn("[waitlist] RESEND_API_KEY is not configured; email not sent", { to, subject });
     return false;
   }
@@ -250,51 +408,43 @@ async function notifyTeam(signup: SignupSummary, noticeVersion: string): Promise
 
 // ------------------------------------------------------------- rate limiting
 
-async function withinLimit(
-  admin: SupabaseAdmin,
-  bucket: string,
-  route: string,
-  max: number,
-  windowMinutes: number
-): Promise<boolean> {
+/**
+ * Counts recent requests for a bucket and records this one.
+ *
+ * Fails open: if the counter cannot be read, the request is allowed through.
+ * A monitoring glitch must never lock out a real visitor.
+ */
+async function withinLimit(bucket: string, route: string, max: number, windowMinutes: number): Promise<boolean> {
   const since = new Date(Date.now() - windowMinutes * 60_000).toISOString();
+  const path =
+    `/waitlist_request_log?select=id&bucket_key=eq.${enc(bucket)}` +
+    `&route=eq.${enc(route)}&created_at=gte.${enc(since)}`;
 
-  const { count, error } = await admin
-    .from("waitlist_request_log")
-    .select("id", { count: "exact", head: true })
-    .eq("bucket_key", bucket)
-    .eq("route", route)
-    .gte("created_at", since);
+  const counted = await rest("HEAD", path, { prefer: "count=exact" });
 
-  if (error) {
-    console.error("[waitlist] rate limit read failed", error);
-    return true; // fail open: never block a real visitor because of a DB hiccup
+  if (counted.count === null) {
+    console.error("[waitlist] rate limit read failed", counted.status);
+    return true;
   }
-  if ((count ?? 0) >= max) return false;
+  if (counted.count >= max) return false;
 
-  await admin.from("waitlist_request_log").insert({ bucket_key: bucket, route });
+  await rest("POST", "/waitlist_request_log", { body: { bucket_key: bucket, route } });
   return true;
 }
 
 // ------------------------------------------------------------- token issuing
 
-async function issueVerificationToken(admin: SupabaseAdmin, signupId: string): Promise<string> {
+async function issueVerificationToken(signupId: string): Promise<string> {
   // A signup only ever has one usable token; older ones are discarded.
-  await admin
-    .from("waitlist_verification_tokens")
-    .delete()
-    .eq("signup_id", signupId)
-    .is("consumed_at", null);
+  await rest("DELETE", `/waitlist_verification_tokens?signup_id=eq.${enc(signupId)}&consumed_at=is.null`);
 
   const token = randomToken();
   const expiresAt = new Date(Date.now() + TOKEN_TTL_MINUTES * 60_000).toISOString();
 
-  const { error } = await admin.from("waitlist_verification_tokens").insert({
-    signup_id: signupId,
-    token_hash: await sha256Hex(token),
-    expires_at: expiresAt
+  const created = await rest("POST", "/waitlist_verification_tokens", {
+    body: { signup_id: signupId, token_hash: await sha256Hex(token), expires_at: expiresAt }
   });
-  if (error) throw error;
+  if (!created.ok) throw new Error(`token insert failed: ${created.status}`);
 
   return token;
 }
@@ -302,7 +452,6 @@ async function issueVerificationToken(admin: SupabaseAdmin, signupId: string): P
 // ------------------------------------------------------------------- handlers
 
 async function handleRegister(
-  admin: SupabaseAdmin,
   request: Request,
   origin: string | null,
   body: Record<string, unknown>
@@ -362,64 +511,68 @@ async function handleRegister(
 
   // --- abuse control --------------------------------------------------------
   const ip = clientIp(request);
-  if (!(await withinLimit(admin, `ip:${ip}`, "register", REGISTER_MAX_PER_IP_PER_HOUR, 60))) {
+  if (!(await withinLimit(`ip:${ip}`, "register", REGISTER_MAX_PER_IP_PER_HOUR, 60))) {
     return json({ error: "rate_limited" }, 429, origin);
   }
-  if (!(await withinLimit(admin, `email:${email}`, "register", REGISTER_MAX_PER_EMAIL_PER_HOUR, 60))) {
+  if (!(await withinLimit(`email:${email}`, "register", REGISTER_MAX_PER_EMAIL_PER_HOUR, 60))) {
     return json({ error: "rate_limited" }, 429, origin);
   }
 
   // --- existing signup? -----------------------------------------------------
-  const { data: existing, error: lookupError } = await admin
-    .from("waitlist_signups")
-    .select("id, status, last_verification_sent_at, verification_sent_count")
-    .eq("email_key", email)
-    .maybeSingle();
+  const lookup = await rest(
+    "GET",
+    `/waitlist_signups?select=id,status,last_verification_sent_at,verification_sent_count&email_key=eq.${enc(email)}&limit=1`
+  );
 
-  if (lookupError) {
-    console.error("[waitlist] signup lookup failed", lookupError);
+  if (!lookup.ok) {
+    console.error("[waitlist] signup lookup failed", lookup.status, lookup.rows);
     return json({ error: "server_error" }, 500, origin);
   }
 
+  const existing = lookup.rows?.[0] ?? null;
   const cooldown = new Date(Date.now() - RESEND_COOLDOWN_MINUTES * 60_000).toISOString();
   const nowIso = new Date().toISOString();
 
   if (existing) {
-    if (existing.status === "verified") {
+    const status = typeof existing.status === "string" ? existing.status : null;
+    const lastSent =
+      typeof existing.last_verification_sent_at === "string" ? existing.last_verification_sent_at : null;
+    const sentCount = typeof existing.verification_sent_count === "number" ? existing.verification_sent_count : 0;
+
+    if (status === "verified") {
       return json({ status: "already_verified" }, 200, origin);
     }
-    if (existing.status === "removed") {
+
+    if (status === "removed") {
       // Treated exactly like a new registration: the person is asking to rejoin.
-      const { error: restoreError } = await admin
-        .from("waitlist_signups")
-        .update({
+      const restored = await rest("PATCH", `/waitlist_signups?id=eq.${enc(existing.id)}`, {
+        body: {
           status: "pending_verification",
           verified_at: null,
           marketing_consent: marketingConsent,
           marketing_consent_at: marketingConsent ? nowIso : null
-        })
-        .eq("id", existing.id);
-      if (restoreError) {
-        console.error("[waitlist] signup restore failed", restoreError);
+        }
+      });
+      if (!restored.ok) {
+        console.error("[waitlist] signup restore failed", restored.status);
         return json({ error: "server_error" }, 500, origin);
       }
     }
 
     // Already pending and mailed very recently: do not re-send, but respond
     // identically so this cannot be used to probe which emails are registered.
-    if (existing.last_verification_sent_at && existing.last_verification_sent_at > cooldown) {
+    if (lastSent && lastSent > cooldown) {
       return json({ status: "pending_verification" }, 200, origin);
     }
 
-    const token = await issueVerificationToken(admin, existing.id);
+    const token = await issueVerificationToken(String(existing.id));
     const sent = await sendVerificationEmail(email, `${siteUrl()}/verify?token=${token}`);
-    await admin
-      .from("waitlist_signups")
-      .update({
-        verification_sent_count: (existing.verification_sent_count ?? 0) + (sent ? 1 : 0),
+    await rest("PATCH", `/waitlist_signups?id=eq.${enc(existing.id)}`, {
+      body: {
+        verification_sent_count: sentCount + (sent ? 1 : 0),
         last_verification_sent_at: sent ? nowIso : null
-      })
-      .eq("id", existing.id);
+      }
+    });
 
     return json({ status: "pending_verification" }, 200, origin);
   }
@@ -427,11 +580,11 @@ async function handleRegister(
   // --- new signup -----------------------------------------------------------
   const noticeVersion = Deno.env.get("WAITLIST_NOTICE_VERSION") ?? "prelaunch-2026-11-06";
 
-  const { data: inserted, error: insertError } = await admin
-    .from("waitlist_signups")
-    .insert({
+  const inserted = await rest("POST", "/waitlist_signups?select=id", {
+    prefer: "return=representation",
+    body: {
       full_name: fullName,
-      email,
+      email: email,
       email_key: email,
       phone: phone && phone !== "invalid" ? phone : null,
       audience_type: audience,
@@ -446,27 +599,28 @@ async function handleRegister(
       waitlist_consent_at: nowIso,
       marketing_consent: marketingConsent,
       marketing_consent_at: marketingConsent ? nowIso : null
-    })
-    .select("id")
-    .single();
+    }
+  });
 
-  if (insertError) {
+  if (!inserted.ok) {
     // Unique violation = a concurrent request claimed this email first.
-    if (insertError.code === "23505") return json({ status: "pending_verification" }, 200, origin);
-    console.error("[waitlist] signup insert failed", insertError);
+    if (inserted.code === "23505" || inserted.status === 409) {
+      return json({ status: "pending_verification" }, 200, origin);
+    }
+    console.error("[waitlist] signup insert failed", inserted.status, inserted.rows);
     return json({ error: "server_error" }, 500, origin);
   }
 
-  const token = await issueVerificationToken(admin, inserted.id);
+  const newId = String(inserted.rows?.[0]?.id ?? "");
+  const token = await issueVerificationToken(newId);
   const sent = await sendVerificationEmail(email, `${siteUrl()}/verify?token=${token}`);
 
-  await admin
-    .from("waitlist_signups")
-    .update({
+  await rest("PATCH", `/waitlist_signups?id=eq.${enc(newId)}`, {
+    body: {
       verification_sent_count: sent ? 1 : 0,
       last_verification_sent_at: sent ? nowIso : null
-    })
-    .eq("id", inserted.id);
+    }
+  });
 
   // Forward the submission to the team inbox. Only new signups reach here —
   // duplicates and resends return earlier, so the inbox is not flooded.
@@ -491,7 +645,6 @@ async function handleRegister(
 }
 
 async function handleVerify(
-  admin: SupabaseAdmin,
   request: Request,
   origin: string | null,
   body: Record<string, unknown>
@@ -499,56 +652,59 @@ async function handleVerify(
   const token = typeof body.token === "string" ? body.token.trim() : "";
   if (!token || token.length > 200) return json({ state: "invalid" }, 200, origin);
 
-  if (!(await withinLimit(admin, `ip:${clientIp(request)}`, "verify", 60, 60))) {
+  if (!(await withinLimit(`ip:${clientIp(request)}`, "verify", 60, 60))) {
     return json({ error: "rate_limited" }, 429, origin);
   }
 
   const tokenHash = await sha256Hex(token);
-  const { data: record, error } = await admin
-    .from("waitlist_verification_tokens")
-    .select("id, signup_id, expires_at, consumed_at")
-    .eq("token_hash", tokenHash)
-    .maybeSingle();
+  const lookup = await rest(
+    "GET",
+    `/waitlist_verification_tokens?select=id,signup_id,expires_at,consumed_at&token_hash=eq.${enc(tokenHash)}&limit=1`
+  );
 
-  if (error) {
-    console.error("[waitlist] token lookup failed", error);
+  if (!lookup.ok) {
+    console.error("[waitlist] token lookup failed", lookup.status);
     return json({ error: "server_error" }, 500, origin);
   }
+
+  const record = lookup.rows?.[0] ?? null;
   if (!record) return json({ state: "invalid" }, 200, origin);
 
-  if (record.consumed_at) {
-    // A reused link still lands on success if the address was already verified.
-    const { data: signup } = await admin
-      .from("waitlist_signups")
-      .select("status")
-      .eq("id", record.signup_id)
-      .maybeSingle();
-    return json({ state: signup?.status === "verified" ? "verified" : "invalid" }, 200, origin);
+  const signupId = String(record.signup_id ?? "");
+
+  // Reports the current state rather than "invalid" when a link is opened
+  // twice, so a returning visitor still sees success.
+  async function stateFromSignup(): Promise<Response> {
+    const signup = await rest("GET", `/waitlist_signups?select=status&id=eq.${enc(signupId)}&limit=1`);
+    const status = signup.rows?.[0]?.status;
+    return json({ state: status === "verified" ? "verified" : "invalid" }, 200, origin);
   }
 
-  if (new Date(record.expires_at).getTime() < Date.now()) {
+  if (record.consumed_at) {
+    return await stateFromSignup();
+  }
+
+  if (typeof record.expires_at !== "string" || new Date(record.expires_at).getTime() < Date.now()) {
     return json({ state: "expired" }, 200, origin);
   }
 
   const now = new Date().toISOString();
-  const { error: consumeError } = await admin
-    .from("waitlist_verification_tokens")
-    .update({ consumed_at: now })
-    .eq("id", record.id)
-    .is("consumed_at", null);
+  const consumed = await rest("PATCH", `/waitlist_verification_tokens?id=eq.${enc(record.id)}&consumed_at=is.null`, {
+    prefer: "return=representation",
+    body: { consumed_at: now }
+  });
 
-  if (consumeError) {
-    console.error("[waitlist] token consume failed", consumeError);
-    return json({ error: "server_error" }, 500, origin);
+  // Zero rows means a concurrent request consumed this token first.
+  if (!consumed.ok || !consumed.rows || consumed.rows.length === 0) {
+    return await stateFromSignup();
   }
 
-  const { error: verifyError } = await admin
-    .from("waitlist_signups")
-    .update({ status: "verified", verified_at: now })
-    .eq("id", record.signup_id);
+  const verified = await rest("PATCH", `/waitlist_signups?id=eq.${enc(signupId)}`, {
+    body: { status: "verified", verified_at: now }
+  });
 
-  if (verifyError) {
-    console.error("[waitlist] signup verify failed", verifyError);
+  if (!verified.ok) {
+    console.error("[waitlist] signup verify failed", verified.status);
     return json({ error: "server_error" }, 500, origin);
   }
 
@@ -556,7 +712,6 @@ async function handleVerify(
 }
 
 async function handleResend(
-  admin: SupabaseAdmin,
   request: Request,
   origin: string | null,
   body: Record<string, unknown>
@@ -564,34 +719,39 @@ async function handleResend(
   const email = normalizeEmail(body.email);
   if (!email) return json({ error: "invalid_request" }, 400, origin);
 
-  if (!(await withinLimit(admin, `ip:${clientIp(request)}`, "resend", 20, 60))) {
+  if (!(await withinLimit(`ip:${clientIp(request)}`, "resend", 20, 60))) {
     return json({ error: "rate_limited" }, 429, origin);
   }
-  if (!(await withinLimit(admin, `email:${email}`, "resend", RESEND_MAX_PER_EMAIL_PER_HOUR, 60))) {
+  if (!(await withinLimit(`email:${email}`, "resend", RESEND_MAX_PER_EMAIL_PER_HOUR, 60))) {
     return json({ error: "rate_limited" }, 429, origin);
   }
 
-  const { data: signup, error } = await admin
-    .from("waitlist_signups")
-    .select("id, status, last_verification_sent_at")
-    .eq("email_key", email)
-    .maybeSingle();
+  const lookup = await rest(
+    "GET",
+    `/waitlist_signups?select=id,status,last_verification_sent_at&email_key=eq.${enc(email)}&limit=1`
+  );
 
-  if (error) {
-    console.error("[waitlist] resend lookup failed", error);
+  if (!lookup.ok) {
+    console.error("[waitlist] resend lookup failed", lookup.status);
     return json({ error: "server_error" }, 500, origin);
   }
 
+  const signup = lookup.rows?.[0] ?? null;
   const cooldown = new Date(Date.now() - RESEND_COOLDOWN_MINUTES * 60_000).toISOString();
 
-  if (signup && signup.status !== "verified" && signup.status !== "removed") {
-    if (!signup.last_verification_sent_at || signup.last_verification_sent_at <= cooldown) {
-      const token = await issueVerificationToken(admin, signup.id);
-      const sent = await sendVerificationEmail(email, `${siteUrl()}/verify?token=${token}`);
-      await admin
-        .from("waitlist_signups")
-        .update({ last_verification_sent_at: sent ? new Date().toISOString() : null })
-        .eq("id", signup.id);
+  if (signup) {
+    const status = typeof signup.status === "string" ? signup.status : null;
+    const lastSent =
+      typeof signup.last_verification_sent_at === "string" ? signup.last_verification_sent_at : null;
+
+    if (status !== "verified" && status !== "removed") {
+      if (!lastSent || lastSent <= cooldown) {
+        const token = await issueVerificationToken(String(signup.id));
+        const sent = await sendVerificationEmail(email, `${siteUrl()}/verify?token=${token}`);
+        await rest("PATCH", `/waitlist_signups?id=eq.${enc(signup.id)}`, {
+          body: { last_verification_sent_at: sent ? new Date().toISOString() : null }
+        });
+      }
     }
   }
 
@@ -611,13 +771,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
     return json({ error: "method_not_allowed" }, 405, origin);
   }
 
-  try {
-    const admin = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-      { auth: { persistSession: false, autoRefreshToken: false } }
-    );
+  if (!Deno.env.get("SUPABASE_URL") || !serviceKey()) {
+    console.error("[waitlist] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing");
+    return json({ error: "server_error" }, 500, origin);
+  }
 
+  try {
     const raw = await request.text();
     if (raw.length > MAX_BODY_BYTES) return json({ error: "payload_too_large" }, 413, origin);
 
@@ -630,11 +789,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     switch (body.action) {
       case "register":
-        return await handleRegister(admin, request, origin, body);
+        return await handleRegister(request, origin, body);
       case "verify":
-        return await handleVerify(admin, request, origin, body);
+        return await handleVerify(request, origin, body);
       case "resend":
-        return await handleResend(admin, request, origin, body);
+        return await handleResend(request, origin, body);
       default:
         return json({ error: "unknown_action" }, 400, origin);
     }

@@ -86,9 +86,41 @@ supabase secrets set RESEND_API_KEY=...            # required for mail to actual
 ```
 
 Required secrets: `RESEND_API_KEY`, `WAITLIST_SITE_URL`, `WAITLIST_ALLOWED_ORIGINS`,
-`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`, `WAITLIST_NOTIFY_EMAIL`. Without `RESEND_API_KEY`
-the flow still works — signups are stored and the email content is written to the function logs —
-but no mail leaves the server.
+`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`, `WAITLIST_NOTIFY_EMAIL`. Without `RESEND_API_KEY`,
+signups may be stored, but no verification or notification emails are sent. The function logs a
+warning, not the verification link; email verification therefore cannot be completed.
+
+#### CORS allowlist
+
+`WAITLIST_ALLOWED_ORIGINS` is a comma-separated list. An entry with no `*` must match the request's
+`Origin` byte for byte. An entry containing `*` is a pattern, which exists because preview origins
+are generated per branch and cannot be listed in advance:
+
+```powershell
+supabase secrets set WAITLIST_ALLOWED_ORIGINS="https://edupay-waitlist.vercel.app,https://edupay-waitlist-*.vercel.app,http://localhost:3000"
+```
+
+A `*` matches only characters within a single hostname label. Keep patterns narrow and review them
+before enabling: even `edupay-waitlist-*` can match similarly named deployments belonging to someone
+else. Prefer exact origins if those deployments aren't all trusted. The example above is not applied
+automatically; update the secret separately when needed. CORS is not a security boundary here — the
+function has no client secret, so anyone can `POST` to it directly. Validation, rate limits and
+generic responses are what protect it; CORS only stops a casual browser on an unrelated site.
+
+Only a concrete origin is ever reflected back, never the pattern that matched it, and every response
+carries `Vary: Origin`. Preflight results are cached for 10 minutes rather than a day, so a corrected
+allowlist takes effect quickly.
+
+#### Health check
+
+Open the function URL directly in a browser tab:
+
+```
+https://<project-ref>.supabase.co/functions/v1/waitlist
+```
+
+A healthy function answers `{"error":"method_not_allowed"}`. Do this before debugging anything else —
+see the troubleshooting table below for why.
 
 ### Team notification email
 
@@ -107,6 +139,53 @@ earlier — so repeat submissions cannot flood the inbox.
 
 The waitlist tables have RLS enabled with **no policies**, so the anon and authenticated roles are
 denied every operation; only the service role inside the edge function can read or write them.
+
+## Troubleshooting the deployed API
+
+What the browser shows does not map one-to-one onto causes. Check this table before changing anything.
+
+| What you see | What it actually means |
+| --- | --- |
+| `{"code":"BOOT_ERROR","message":"Function failed to start"}` | The function never started. No handler ran, so no origin, header or request body mattered. |
+| "We couldn't reach EduPay. Check your connection and try again." | Any network-level failure: `BOOT_ERROR`, a CORS rejection, or a 404 from a malformed URL. |
+| "Waitlist registration is not yet connected yet" | `NEXT_PUBLIC_EDUPAY_API_URL` was empty at build time. Set it, redeploy with the build cache cleared, then hard-refresh. |
+| `{"error":"method_not_allowed"}` in a bare tab | Healthy. The function started and rejected `GET`. |
+| "Some details need checking" | Server-side validation rejected a field. |
+| "Too many attempts" | Rate limited: 5/hour per IP, 3/hour per email. |
+
+### The function must not import anything
+
+An earlier version opened with `import { createClient } from "jsr:@supabase/supabase-js@2"`. That
+module could not be resolved when the function started, so it returned `BOOT_ERROR` for every single
+request. From the browser this looks exactly like a CORS failure, and it cost several rounds of
+origin debugging before it was found.
+
+The function therefore has **no imports at all**: it reaches PostgREST and the mail provider through
+the web-standard `fetch()`. Do not add a dependency back without first confirming the function still
+boots.
+
+A boot failure may not produce an application log line. Check the function URL and the platform's
+edge-function logs when diagnosing a failure.
+
+## Canonical site URL
+
+`SITE_URL` in `src/lib/site.ts` backs canonical tags, `robots.txt`, `sitemap.xml` and Open Graph URLs.
+It is resolved once at build time, in this order:
+
+1. `NEXT_PUBLIC_SITE_URL` — set this once the custom domain is live.
+2. `VERCEL_PROJECT_PRODUCTION_URL` — Vercel's production domain, when its system environment
+   variables are exposed to the build.
+3. `https://waitlist.edupayafrica.com.ng` — last-resort fallback.
+
+Set `NEXT_PUBLIC_SITE_URL` explicitly if Vercel system variables are unavailable, or to choose a
+specific canonical domain. Rebuild the frontend after changing it. Set the separate Supabase secret
+`WAITLIST_SITE_URL` to the same origin for verification links; it is not updated automatically.
+
+`VERCEL_URL` is deliberately ignored: it is the URL of the *current* deployment, so on a preview build
+it would point canonical tags and the sitemap at a throwaway host.
+
+`src/lib/site.ts` reads a non-public variable, so it is server-only. It is imported by the root layout,
+`robots.ts` and `sitemap.ts` — do not import it from a client component.
 
 ## Pre-launch approvals
 
@@ -128,6 +207,15 @@ The official EduPay WhatsApp Channel is optional: https://whatsapp.com/channel/0
 
 ```powershell
 npx tsc --noEmit
+npm run check:edge
+npm test
 npm run lint
 npm run build
 ```
+
+The separate edge check uses minimal Deno declarations in `tests/deno-globals.d.ts` because
+`supabase/` is excluded from the Next.js TypeScript configuration. Tests cover the no-import rule,
+CORS matching and canonical URL resolution. These checks also run on pull requests, but they do not
+replace a real deployment smoke test.
+
+After deploying, load the function URL to confirm it returns `{"error":"method_not_allowed"}`.
