@@ -90,6 +90,36 @@ Required secrets: `RESEND_API_KEY`, `WAITLIST_SITE_URL`, `WAITLIST_ALLOWED_ORIGI
 the flow still works — signups are stored and the email content is written to the function logs —
 but no mail leaves the server.
 
+#### CORS allowlist
+
+`WAITLIST_ALLOWED_ORIGINS` is a comma-separated list. An entry with no `*` must match the request's
+`Origin` byte for byte. An entry containing `*` is a pattern, which exists because preview origins
+are generated per branch and cannot be listed in advance:
+
+```powershell
+supabase secrets set WAITLIST_ALLOWED_ORIGINS="https://edupay-waitlist.vercel.app,https://edupay-waitlist-*.vercel.app,http://localhost:3000"
+```
+
+Keep patterns narrow. `https://*.vercel.app` would admit any Vercel customer's site, so always scope
+the wildcard to this project's name (`edupay-waitlist-*`). CORS is not the security boundary here —
+the function has no client secret, so anyone can `POST` to it directly. Validation, rate limits and
+generic responses are what protect it; CORS only stops a casual browser on an unrelated site.
+
+Only a concrete origin is ever reflected back, never the pattern that matched it, and every response
+carries `Vary: Origin`. Preflight results are cached for 10 minutes rather than a day, so a corrected
+allowlist takes effect quickly.
+
+#### Health check
+
+Open the function URL directly in a browser tab:
+
+```
+https://<project-ref>.supabase.co/functions/v1/waitlist
+```
+
+A healthy function answers `{"error":"method_not_allowed"}`. Do this before debugging anything else —
+see the troubleshooting table below for why.
+
 ### Team notification email
 
 Every **new** signup is forwarded to the address in `WAITLIST_NOTIFY_EMAIL` (currently
@@ -107,6 +137,47 @@ earlier — so repeat submissions cannot flood the inbox.
 
 The waitlist tables have RLS enabled with **no policies**, so the anon and authenticated roles are
 denied every operation; only the service role inside the edge function can read or write them.
+
+## Troubleshooting the deployed API
+
+What the browser shows does not map one-to-one onto causes. Check this table before changing anything.
+
+| What you see | What it actually means |
+| --- | --- |
+| `{"code":"BOOT_ERROR","message":"Function failed to start"}` | The function never started. No handler ran, so no origin, header or request body mattered. |
+| "We couldn't reach EduPay. Check your connection and try again." | Any network-level failure: `BOOT_ERROR`, a CORS rejection, or a 404 from a malformed URL. |
+| "Waitlist registration is not yet connected yet" | `NEXT_PUBLIC_EDUPAY_API_URL` was empty at build time. Set it, redeploy with the build cache cleared, then hard-refresh. |
+| `{"error":"method_not_allowed"}` in a bare tab | Healthy. The function started and rejected `GET`. |
+| "Some details need checking" | Server-side validation rejected a field. |
+| "Too many attempts" | Rate limited: 5/hour per IP, 3/hour per email. |
+
+### The function must not import anything
+
+An earlier version opened with `import { createClient } from "jsr:@supabase/supabase-js@2"`. That
+module could not be resolved when the function started, so it returned `BOOT_ERROR` for every single
+request. From the browser this looks exactly like a CORS failure, and it cost several rounds of
+origin debugging before it was found.
+
+The function therefore has **no imports at all**: it reaches PostgREST and the mail provider through
+the web-standard `fetch()`. Do not add a dependency back without first confirming the function still
+boots.
+
+A boot failure produces no application log line, so the function URL is the only reliable signal.
+
+## Canonical site URL
+
+`SITE_URL` in `src/lib/site.ts` backs canonical tags, `robots.txt`, `sitemap.xml` and Open Graph URLs.
+It is resolved once at build time, in this order:
+
+1. `NEXT_PUBLIC_SITE_URL` — set this once the custom domain is live.
+2. `VERCEL_PROJECT_PRODUCTION_URL` — injected by Vercel; the `*.vercel.app` production host.
+3. `https://waitlist.edupayafrica.com.ng` — last-resort fallback.
+
+`VERCEL_URL` is deliberately ignored: it is the URL of the *current* deployment, so on a preview build
+it would point canonical tags and the sitemap at a throwaway host.
+
+`src/lib/site.ts` reads a non-public variable, so it is server-only. It is imported by the root layout,
+`robots.ts` and `sitemap.ts` — do not import it from a client component.
 
 ## Pre-launch approvals
 
@@ -131,3 +202,18 @@ npx tsc --noEmit
 npm run lint
 npm run build
 ```
+
+`supabase/` is excluded from `tsconfig.json` and ESLint on purpose: it is Deno code, not part of the
+Next.js app, including it would pull in conflicting globals. That means **CI will not catch a broken
+edge function**, so check it separately after editing it:
+
+```powershell
+npx tsc --noEmit --target esnext --module esnext --moduleResolution bundler --lib esnext,dom --strict --skipLibCheck supabase/functions/waitlist/index.ts
+```
+
+Expect about a dozen `TS2304: Cannot find name 'Deno'` — that is only the local toolchain lacking
+Deno's globals — plus one `TS7006` on the line that maps over `Deno.env.get(...)`, which falls away
+once `Deno` is typed. Anything else, and in particular `TS2307` (cannot find module), is a real
+error and will usually mean the function will not boot.
+
+After deploying, always load the function URL to confirm it returns `{"error":"method_not_allowed"}`.
