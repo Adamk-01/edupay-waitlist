@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="EduPay">
+  <rect width="64" height="64" rx="14" fill="#071f45"/>
+  <path d="M32 15 9.5 25.5 32 36l22.5-10.5z" fill="#ff941f"/>
+  <path d="M17.5 30.5V39c0 4.7 6.5 8.5 14.5 8.5S46.5 43.7 46.5 39v-8.5" fill="none" stroke="#ff941f" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M46.5 31v8.5" stroke="#ff941f" stroke-width="4" stroke-linecap="round"/>
+</svg>

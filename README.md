@@ -23,39 +23,83 @@ Open http://localhost:3000.
 ## Frontend routes
 
 - `/` — landing page and waitlist form
-- `/verify` — verification-in-progress instructions
-- `/success` — display-only post-verification content and optional official WhatsApp Channel link; it must only be surfaced after the backend confirms verification
+- `/verify` — verification instructions; with `?token=…` it confirms the token and renders verified, expired or invalid. `noindex`.
+- `/success` — display-only post-verification content and optional official WhatsApp Channel link; it must only be surfaced after the backend confirms verification. `noindex`.
 - `/privacy` — transparent pre-launch waitlist privacy notice; not yet approved for production
 
-## Backend integration status
+## Backend integration
 
-Backend integration is intentionally **not enabled**. The registration endpoint, request DTO, response format, verification URL and status exchange have not been confirmed. The frontend does not send registration data, invent an endpoint or treat a registration as verified.
+The waitlist backend is implemented as a Supabase Edge Function and is **switched off until
+`NEXT_PUBLIC_EDUPAY_API_URL` is set**. With the variable empty, `registerWaitlist()` throws a
+configuration error and the form reports that registration is not connected — nothing is sent
+anywhere. That is the intended state until the privacy notice is approved.
 
-`src/lib/waitlist-api.ts` contains the frontend input/unknown response types, centralized API base URL configuration and a configuration error until an agreed API adapter can be implemented. The form still validates and preserves input but reports that registration is not connected. `src/components/verification-state.tsx` provides UI for in-progress, verified, expired and invalid states; `/verify` currently displays in-progress only because the backend result transport and URL format are not known.
+### Contract
 
-`.env.example` leaves `NEXT_PUBLIC_EDUPAY_API_URL` empty. Do not configure production values until the contract below is agreed. Existing provisional endpoint values, if present in a local `.env.local`, are not used by the current frontend.
+All three actions are `POST` to `<NEXT_PUBLIC_EDUPAY_API_URL>/waitlist` with an `action` field:
 
-### Backend contract required before integration
+| Action | Request | Success response |
+| --- | --- | --- |
+| `register` | `fullName`, `email`, `phone?`, `audienceType`, `state?`, `schoolName?`, `educationLevel?`, `institutionName?`, `institutionType?`, `contactRole?`, `waitlistConsent`, `marketingConsent` | `201 { status: "pending_verification" }` or `200 { status: "already_verified" }` |
+| `verify` | `token` | `200 { state: "verified" \| "expired" \| "invalid" }` |
+| `resend` | `email` | `200 { status: "accepted" }` (identical for every email: no enumeration) |
 
-The backend team must confirm and document:
+Errors: `400 { error: "invalid_request", fields: [...] }`, `413 payload_too_large`,
+`429 { error: "rate_limited" }`, `500 { error: "server_error" }`. Internal detail is logged
+server-side only and never returned to visitors.
 
-1. **Registration:** exact HTTP method and path; accepted DTO field names and types for name, email, optional normalized phone, audience, optional state and audience-specific fields; validation limits; and any CORS requirements. The frontend audience values are `student`, `parent_guardian` and `institution`; the backend must confirm or define their mapping.
-2. **Consent records:** how the server records the required waitlist notice/version and consent time separately from optional launch-announcement consent; how consent withdrawal is handled; and how the notice version is supplied.
-3. **Successful registration response:** exact success status and response schema, including how the frontend distinguishes a pending verification registration from an already verified registration. The frontend must not infer verification from a generic success response.
-4. **Duplicates:** exact behavior for an existing pending or verified email, including status/response semantics, whether a verification email is sent again, and the user-safe message to show. Define server-side idempotency and rate limits.
-5. **Email verification:** the email link URL format, token handling, the verification endpoint or callback, and how the frontend receives confirmed states for in-progress, verified, expired and invalid links. No URL parameter or endpoint format is assumed in this frontend.
-6. **Resending verification:** whether resend is supported; if so, its exact method, path, request/response semantics, expiry, throttling and generic privacy-safe messages.
-7. **Privacy and email operations:** controller identity and contact, approved privacy notice/version, retention and deletion rules, access/processor details, approved handling of minors, and a working unsubscribe mechanism in every optional launch-announcement email.
-8. **Operational safeguards:** server-side validation, abuse/rate limiting, CORS allowlist, and safe public error semantics. Internal errors must not be sent to visitors.
+Answers to the points that were previously open:
 
-Do not create customer accounts, wallet accounts or payment records when a person joins the waitlist.
+1. **Registration** — `POST .../waitlist`, field names as above. Audience values are `student`,
+   `parent_guardian`, `institution`. CORS is restricted to `WAITLIST_ALLOWED_ORIGINS`.
+2. **Consent records** — `waitlist_consent`, `waitlist_notice_version` (from the
+   `WAITLIST_NOTICE_VERSION` secret) and `waitlist_consent_at` are stored on every row;
+   `marketing_consent` / `marketing_consent_at` are stored separately and a check constraint
+   keeps the two in step.
+3. **Success response** — only `pending_verification` and `already_verified` exist, so the
+   frontend can never infer verification from a generic success.
+4. **Duplicates** — one row per lowercased email (`waitlist_signups_email_key_idx`). A pending
+   duplicate returns the same `pending_verification` body as a brand new signup; unknown emails
+   are indistinguishable from pending ones.
+5. **Email verification** — the link is `<WAITLIST_SITE_URL>/verify?token=…`, tokens are 32 random
+   bytes, valid for 24 hours, single-use, and only the SHA-256 hash is stored. `/verify` renders
+   in-progress, verified, expired or invalid.
+6. **Resending** — supported via `action: "resend"`, throttled to 3/hour per email with a 10-minute
+   cooldown, and it always answers `accepted`. The UI for it is not built yet.
+7. **Privacy and email operations** — still open. See "Pre-launch approvals".
+8. **Operational safeguards** — server-side re-validation of every field, per-IP and per-email rate
+   limits, an 8 KB body cap, a CORS allowlist that never reflects an unknown origin, and generic
+   public errors.
+
+Do not create customer accounts, wallet accounts or payment records when a person joins the
+waitlist — the edge function only ever touches the three `waitlist_*` tables.
+
+### Deploying the backend
+
+The schema lives in `supabase/migrations/` and the function in
+`supabase/functions/waitlist/index.ts`:
+
+```powershell
+supabase db push
+supabase functions deploy waitlist --no-verify-jwt
+supabase secrets set RESEND_API_KEY=...            # required for mail to actually send
+```
+
+Required secrets: `RESEND_API_KEY`, `WAITLIST_SITE_URL`, `WAITLIST_ALLOWED_ORIGINS`,
+`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`. Without `RESEND_API_KEY` the flow still works —
+signups are stored and the verification link is written to the function logs, but no email is sent.
+
+The waitlist tables have RLS enabled with **no policies**, so the anon and authenticated roles are
+denied every operation; only the service role inside the edge function can read or write them.
 
 ## Pre-launch approvals
 
 - Replace the pre-launch privacy notice with approved policy content and complete the outstanding privacy details.
 - Obtain legal review of age thresholds and parental/guardian consent for student registrations, including minors.
 - Confirm opt-in and unsubscribe behavior for launch emails.
-- Confirm the backend API contract above before implementing or enabling network requests.
+- Set `NEXT_PUBLIC_EDUPAY_API_URL` in the hosting environment. Until it is set, registration stays
+  switched off and no visitor data is transmitted, so this is the switch that goes live last.
+- Add `RESEND_API_KEY` and a verified sending domain, otherwise verification emails are never sent.
 - Replace illustrative product mockups only with approved product imagery.
 
 The official EduPay WhatsApp Channel is optional: https://whatsapp.com/channel/0029VbByeNR47XeEqQcE803V
