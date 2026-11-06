@@ -24,14 +24,14 @@ Open http://localhost:3000.
 
 - `/` — landing page and waitlist form
 - `/verify` — verification-in-progress instructions
-- `/success` — post-verification success content and optional official WhatsApp Channel link
+- `/success` — display-only post-verification content and optional official WhatsApp Channel link; it must only be surfaced after the backend confirms verification
 - `/privacy` — transparent pre-launch waitlist privacy notice; not yet approved for production
 
 ## Backend integration status
 
 Backend integration is intentionally **not enabled**. The registration endpoint, request DTO, response format, verification URL and status exchange have not been confirmed. The frontend does not send registration data, invent an endpoint or treat a registration as verified.
 
-`src/lib/waitlist-api.ts` contains the frontend input types, centralized API base URL configuration and a configuration error until an agreed API adapter can be implemented. `WaitlistRegistrationResponse` is `unknown` because no backend response format has been confirmed. The form still validates and preserves input but reports that registration is not connected.
+`src/lib/waitlist-api.ts` contains the frontend input/unknown response types, centralized API base URL configuration and a configuration error until an agreed API adapter can be implemented. The form still validates and preserves input but reports that registration is not connected. `src/components/verification-state.tsx` provides UI for in-progress, verified, expired and invalid states; `/verify` currently displays in-progress only because the backend result transport and URL format are not known.
 
 `.env.example` leaves `NEXT_PUBLIC_EDUPAY_API_URL` empty. Do not configure production values until the contract below is agreed. Existing provisional endpoint values, if present in a local `.env.local`, are not used by the current frontend.
 

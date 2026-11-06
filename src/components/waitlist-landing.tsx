@@ -20,10 +20,10 @@ const steps = [
 ];
 const faqs = [
   ["What is EduPay?", "EduPay is an education services platform designed to make it easier to discover, request, pay for and track essential education services."],
-  ["When will EduPay launch?", "We will announce the launch to waitlist members by email and through our official communication channels."],
+  ["When will EduPay launch?", "We will announce the launch through our official communication channels and by email to people who opt in to launch announcements."],
   ["Is joining the waitlist free?", "Yes. Joining the waitlist is free and does not create a customer account or wallet."],
   ["Does joining guarantee that every service is available immediately?", "Service availability may vary. We will communicate the services available when EduPay launches."],
-  ["How will I receive updates?", "Email launch announcements are optional and separate from joining the waitlist. You can unsubscribe from those emails at any time. Joining our WhatsApp Channel is also optional."]
+  ["How will I receive updates?", "Email launch announcements are optional and separate from joining the waitlist. Any launch announcement email must include a working unsubscribe option. Joining our WhatsApp Channel is also optional."]
 ];
 
 export function WaitlistLanding() {

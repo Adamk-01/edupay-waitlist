@@ -47,6 +47,7 @@ export function WaitlistForm() {
     event.preventDefault();
     if (submitting.current) return;
 
+    setError("");
     const form = event.currentTarget;
     const data = new FormData(form);
     const phone = normalizePhoneNumber(String(data.get("phone") ?? ""));
@@ -75,7 +76,6 @@ export function WaitlistForm() {
       return;
     }
 
-    setError("");
     submitting.current = true;
     setBusy(true);
 

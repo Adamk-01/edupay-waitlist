@@ -22,12 +22,12 @@ export default function SuccessPage() {
             <h2>Stay connected with EduPay</h2>
             <p>Join our official WhatsApp Channel for product news, helpful updates and our launch announcement.</p>
           </div>
-          <a className="button button-whatsapp" href={WHATSAPP_CHANNEL} target="_blank" rel="noreferrer">
+          <a className="button button-whatsapp" href={WHATSAPP_CHANNEL} target="_blank" rel="noopener noreferrer">
             Join WhatsApp Channel <MessageCircle size={17} />
           </a>
           <small>Joining the channel is optional and does not affect your waitlist registration.</small>
         </div>
-        <div className="success-note"><Mail size={17} /> Email launch announcements are sent only if you opted in. You can unsubscribe from them.</div>
+        <div className="success-note"><Mail size={17} /> Email launch announcements are optional and must include a working unsubscribe option.</div>
         <Link href="/" className="text-link">Return to the website</Link>
       </section>
     </main>
