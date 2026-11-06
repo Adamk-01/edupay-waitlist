@@ -67,12 +67,10 @@ type Row = Record<string, unknown>;
 /**
  * Encodes a value for use in a PostgREST query string.
  *
- * PostgREST parses its query string against the database, so this must be
- * airtight: a value that reaches it unescaped could be read as structure
- * rather than data. encodeURIComponent alone is not enough — it leaves
- * ! ' ( ) * intact, and all of those carry meaning to PostgREST (for example
- * "in.(a,b)" or "like.*foo*"). They are escaped explicitly here, leaving the
- * RFC 3986 unreserved set as the only characters passed through verbatim.
+ * This protects the URL's query-string boundaries, including characters that
+ * encodeURIComponent leaves unescaped. PostgREST decodes the value before
+ * parsing its own filter syntax, so URL encoding alone is not a substitute for
+ * validating inputs or safely constructing more complex filter expressions.
  */
 function enc(value: unknown): string {
   return encodeURIComponent(String(value)).replace(
@@ -91,16 +89,18 @@ function enc(value: unknown): string {
  *   https://edupay-waitlist.vercel.app    exact production origin
  *   https://edupay-waitlist-*.vercel.app  every Vercel preview for this project
  *
- * Keep patterns as narrow as you can. "https://*.vercel.app" would allow any
- * Vercel customer's site, so scope the wildcard to this project's name.
+ * Wildcards match only characters within a single hostname label. Keep patterns
+ * narrow: a matching project name alone does not prove ownership of a Vercel
+ * deployment, so only enable preview patterns if you trust all matching hosts.
  */
 function matchesOrigin(origin: string, pattern: string): boolean {
   if (pattern === "*") return true;
   if (!pattern.includes("*")) return pattern === origin;
 
+  // Restrict wildcard matches to a single DNS label, not dots, ports or paths.
   const escaped = pattern
     .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\\\*/g, ".*");
+    .replace(/\\\*/g, "[a-zA-Z0-9-]*");
   return new RegExp(`^${escaped}$`).test(origin);
 }
 
@@ -306,8 +306,8 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
   const from = Deno.env.get("WAITLIST_FROM_EMAIL") ?? "EduPay Waitlist <no-reply@edupayafrica.com.ng>";
 
   if (!apiKey) {
-    // Without a provider the flow still works end to end, but no mail leaves
-    // the server. Content is logged so it stays testable in staging.
+    // Without a provider no verification or notification email is sent.
+    // Do not log the verification link or email content.
     console.warn("[waitlist] RESEND_API_KEY is not configured; email not sent", { to, subject });
     return false;
   }

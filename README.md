@@ -86,9 +86,9 @@ supabase secrets set RESEND_API_KEY=...            # required for mail to actual
 ```
 
 Required secrets: `RESEND_API_KEY`, `WAITLIST_SITE_URL`, `WAITLIST_ALLOWED_ORIGINS`,
-`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`, `WAITLIST_NOTIFY_EMAIL`. Without `RESEND_API_KEY`
-the flow still works — signups are stored and the email content is written to the function logs —
-but no mail leaves the server.
+`WAITLIST_NOTICE_VERSION`, `WAITLIST_FROM_EMAIL`, `WAITLIST_NOTIFY_EMAIL`. Without `RESEND_API_KEY`,
+signups may be stored, but no verification or notification emails are sent. The function logs a
+warning, not the verification link; email verification therefore cannot be completed.
 
 #### CORS allowlist
 
@@ -100,9 +100,11 @@ are generated per branch and cannot be listed in advance:
 supabase secrets set WAITLIST_ALLOWED_ORIGINS="https://edupay-waitlist.vercel.app,https://edupay-waitlist-*.vercel.app,http://localhost:3000"
 ```
 
-Keep patterns narrow. `https://*.vercel.app` would admit any Vercel customer's site, so always scope
-the wildcard to this project's name (`edupay-waitlist-*`). CORS is not the security boundary here —
-the function has no client secret, so anyone can `POST` to it directly. Validation, rate limits and
+A `*` matches only characters within a single hostname label. Keep patterns narrow and review them
+before enabling: even `edupay-waitlist-*` can match similarly named deployments belonging to someone
+else. Prefer exact origins if those deployments aren't all trusted. The example above is not applied
+automatically; update the secret separately when needed. CORS is not a security boundary here — the
+function has no client secret, so anyone can `POST` to it directly. Validation, rate limits and
 generic responses are what protect it; CORS only stops a casual browser on an unrelated site.
 
 Only a concrete origin is ever reflected back, never the pattern that matched it, and every response
@@ -162,7 +164,8 @@ The function therefore has **no imports at all**: it reaches PostgREST and the m
 the web-standard `fetch()`. Do not add a dependency back without first confirming the function still
 boots.
 
-A boot failure produces no application log line, so the function URL is the only reliable signal.
+A boot failure may not produce an application log line. Check the function URL and the platform's
+edge-function logs when diagnosing a failure.
 
 ## Canonical site URL
 
@@ -170,8 +173,13 @@ A boot failure produces no application log line, so the function URL is the only
 It is resolved once at build time, in this order:
 
 1. `NEXT_PUBLIC_SITE_URL` — set this once the custom domain is live.
-2. `VERCEL_PROJECT_PRODUCTION_URL` — injected by Vercel; the `*.vercel.app` production host.
+2. `VERCEL_PROJECT_PRODUCTION_URL` — Vercel's production domain, when its system environment
+   variables are exposed to the build.
 3. `https://waitlist.edupayafrica.com.ng` — last-resort fallback.
+
+Set `NEXT_PUBLIC_SITE_URL` explicitly if Vercel system variables are unavailable, or to choose a
+specific canonical domain. Rebuild the frontend after changing it. Set the separate Supabase secret
+`WAITLIST_SITE_URL` to the same origin for verification links; it is not updated automatically.
 
 `VERCEL_URL` is deliberately ignored: it is the URL of the *current* deployment, so on a preview build
 it would point canonical tags and the sitemap at a throwaway host.
@@ -199,21 +207,15 @@ The official EduPay WhatsApp Channel is optional: https://whatsapp.com/channel/0
 
 ```powershell
 npx tsc --noEmit
+npm run check:edge
+npm test
 npm run lint
 npm run build
 ```
 
-`supabase/` is excluded from `tsconfig.json` and ESLint on purpose: it is Deno code, not part of the
-Next.js app, including it would pull in conflicting globals. That means **CI will not catch a broken
-edge function**, so check it separately after editing it:
+The separate edge check uses minimal Deno declarations in `tests/deno-globals.d.ts` because
+`supabase/` is excluded from the Next.js TypeScript configuration. Tests cover the no-import rule,
+CORS matching and canonical URL resolution. These checks also run on pull requests, but they do not
+replace a real deployment smoke test.
 
-```powershell
-npx tsc --noEmit --target esnext --module esnext --moduleResolution bundler --lib esnext,dom --strict --skipLibCheck supabase/functions/waitlist/index.ts
-```
-
-Expect about a dozen `TS2304: Cannot find name 'Deno'` — that is only the local toolchain lacking
-Deno's globals — plus one `TS7006` on the line that maps over `Deno.env.get(...)`, which falls away
-once `Deno` is typed. Anything else, and in particular `TS2307` (cannot find module), is a real
-error and will usually mean the function will not boot.
-
-After deploying, always load the function URL to confirm it returns `{"error":"method_not_allowed"}`.
+After deploying, load the function URL to confirm it returns `{"error":"method_not_allowed"}`.

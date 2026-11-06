@@ -7,17 +7,17 @@
  *   2. VERCEL_PROJECT_PRODUCTION_URL  Vercel's production domain (no protocol)
  *   3. FALLBACK_SITE_URL              last resort
  *
- * Set NEXT_PUBLIC_SITE_URL once the custom domain is live. Vercel only knows
- * the domain it issues (*.vercel.app), so without the override a project with
- * both would end up advertising the Vercel host in canonical tags.
+ * Set NEXT_PUBLIC_SITE_URL to the preferred canonical domain when several
+ * domains are configured. Vercel system environment variables must be exposed
+ * to the build for VERCEL_PROJECT_PRODUCTION_URL to be available.
  *
  * VERCEL_URL is deliberately not used: it is the URL of the *current*
  * deployment, so on a preview build it would point canonical tags and the
  * sitemap at a throwaway preview host.
  *
- * This module is server-only. It is imported by the root layout, robots.ts and
- * sitemap.ts — none of which ship to the browser — so reading a non-public env
- * var here is safe. Do not import it from a client component.
+ * This module is server-only. It is imported by the root layout, robots.ts,
+ * sitemap.ts and the server-rendered WhatsApp placeholder. Do not import it
+ * from a client component.
  */
 
 const FALLBACK_SITE_URL = "https://waitlist.edupayafrica.com.ng";
