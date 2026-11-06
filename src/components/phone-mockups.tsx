@@ -1,36 +1,47 @@
-import { FileText, GraduationCap, Search, Wallet, Clock3, CheckCircle2, FolderOpen } from "lucide-react";
+import Image from "next/image";
 
+/**
+ * Product screenshots shown in the hero.
+ *
+ * The previous version built these "screens" out of HTML and CSS, which meant
+ * the hero advertised invented content (a fake wallet balance, fake order
+ * cards). These are real screenshots from the EduPay app.
+ *
+ * Dimensions come from the source images (562 x 1280, a 1:2.28 portrait) and
+ * are passed explicitly so the browser can reserve space and the hero does not
+ * shift while the images load.
+ */
 export function PhoneMockups() {
   return (
-    <div className="phone-stage" role="img" aria-label="Illustrative preview of the EduPay mobile experience">
+    <div className="phone-stage">
       <div className="orbit orbit-one" />
       <div className="orbit orbit-two" />
+
       <div className="phone phone-home">
-        <div className="phone-notch" />
-        <div className="phone-screen">
-          <div className="phone-top"><span className="mini-brand"><GraduationCap size={17}/> EduPay</span><Search size={16}/></div>
-          <p className="phone-greeting">Good morning,<br/><b>Student 👋</b></p>
-          <div className="phone-banner"><small>YOUR EDUCATION JOURNEY</small><b>Everything you need, in one place.</b><span>Explore services →</span></div>
-          <div className="phone-section-title">Our Services <small>View all</small></div>
-          <div className="phone-service-grid">
-            <div><FileText/><b>School Forms</b></div><div><GraduationCap/><b>JAMB Services</b></div>
-            <div><CheckCircle2/><b>Certificates</b></div><div><FolderOpen/><b>Results & Docs</b></div>
-          </div>
-          <div className="phone-balance"><span>Wallet balance</span><b>₦12,500.00</b><small><Wallet size={12}/> Secure payments</small></div>
-        </div>
+        <Image
+          src="/edupay-screen-1.jpg"
+          alt="The EduPay app home screen, listing education services"
+          width={562}
+          height={1280}
+          priority
+          sizes="(max-width: 700px) 138px, 176px"
+          className="phone-screen-image"
+        />
       </div>
+
       <div className="phone phone-orders">
-        <div className="phone-notch" />
-        <div className="phone-screen">
-          <div className="phone-top"><b>My Orders</b><span>＋</span></div>
-          <div className="order-tabs">All　 Pending　 In progress</div>
-          <div className="order-card"><small>JAMB SERVICES</small><b>JAMB Registration</b><span className="status status-progress">In progress</span><div className="order-foot"><Clock3 size={13}/> Track request →</div></div>
-          <div className="order-card"><small>DOCUMENTS</small><b>Certificate Processing</b><span className="status status-done">Completed</span><div className="order-foot"><CheckCircle2 size={13}/> View details →</div></div>
-          <div className="order-card"><small>EDUPAY VAULT</small><b>My Documents</b><span className="document-row"><FileText size={15}/> Result statement.pdf</span><span className="document-row"><FileText size={15}/> Certificate.pdf</span></div>
-        </div>
+        <Image
+          src="/edupay-screen-2.jpg"
+          alt="The EduPay app showing the progress of a service request"
+          width={562}
+          height={1280}
+          sizes="(max-width: 700px) 138px, 176px"
+          className="phone-screen-image"
+        />
       </div>
-      <div className="float-chip chip-secure"><CheckCircle2 size={16}/> Secure & reliable</div>
-      <div className="float-chip chip-track"><Clock3 size={16}/> Track your requests</div>
+
+      <div className="float-chip chip-secure">Secure &amp; reliable</div>
+      <div className="float-chip chip-track">Track your requests</div>
     </div>
   );
 }

@@ -164,3 +164,175 @@
     padding: 17px;
   }
 }
+
+/* ------------------------------------------------------------------ hero phones
+   The frames now hold real 562x1280 screenshots (a 1:2.28 portrait), so they
+   are sized to that ratio instead of the old 1:1.83 CSS-built mockups:
+     desktop: 200px frame - 14px padding - 10px border = 176px wide image,
+              176 x 2.28 = 401px tall image, + 24px chrome = 425px frame.
+   The fake notch was dropped: a real screenshot has its own status bar, and
+   overlaying a black notch hid it.                                            */
+
+.phone {
+  width: 200px;
+  height: 425px;
+  overflow: hidden;
+}
+
+.phone-screen-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 25px;
+}
+
+@media (max-width: 700px) {
+  .phone {
+    width: 158px;
+    height: 334px;
+  }
+
+  .phone-screen-image {
+    border-radius: 21px;
+  }
+}
+
+/* -------------------------------------------------------------- mobile navigation
+   Below 700px the desktop links and the header CTA are hidden. They used to be
+   replaced by a hamburger that was really just a link to the form, so there was
+   no way to reach Home / About / Services / FAQs on a phone. This is the real
+   menu: a button that owns expanded state, an Escape handler, and a panel that
+   is only in the DOM while it is open.                                          */
+
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.nav-toggle:hover {
+  background: #ffffff1a;
+}
+
+.mobile-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: 10px 20px 20px;
+  background: var(--navy2);
+  border-top: 1px solid #ffffff26;
+  box-shadow: 0 18px 40px #00000059;
+}
+
+.mobile-panel nav {
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-panel nav a {
+  padding: 13px 4px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mobile-panel nav a + a {
+  border-top: 1px solid #ffffff1f;
+}
+
+.mobile-panel .button {
+  margin-top: 14px;
+  width: 100%;
+}
+
+@media (max-width: 700px) {
+  .nav-toggle {
+    display: inline-flex;
+  }
+}
+
+/* --------------------------------------------------------- post-submit next step */
+.verify-next-step {
+  width: min(650px, 100%);
+  margin-top: 22px;
+}
+
+.verify-next-step .whatsapp-panel {
+  margin: 0;
+}
+
+/* -------------------------------------------------- contrast and type scale (F-6)
+   Six text/background pairs failed WCAG 2.1 AA. Every replacement below was
+   computed with the WCAG relative-luminance formula and clears 4.5:1 at the
+   size it is used. Supporting copy also moved off 10-12px, which was below a
+   comfortable minimum even where the contrast passed.                          */
+
+:root {
+  /* was #68758a — 4.46:1 on cream → 5.41:1 (5.67:1 on white) */
+  --muted: #5c6878;
+}
+
+.eyebrow {
+  /* was #a76b21 — 4.20:1 → 5.86:1. Dark-panel eyebrows are more specific
+     (.journey-intro .eyebrow) and keep their orange. */
+  color: #8a5615;
+}
+
+.button-whatsapp {
+  /* was #159b60 — 3.57:1 with white text → 5.17:1 */
+  background: #0f7d4c;
+}
+
+.whatsapp-panel small {
+  /* was #687b70 — 4.18:1 → 5.25:1 */
+  color: #5a6b60;
+}
+
+.doc-file small {
+  /* was #8390a3 — 3.24:1 → 4.54:1 */
+  color: #6b7789;
+}
+
+.service-card p,
+.faq-item p,
+.whatsapp-panel p,
+.audience-card > p,
+.about-copy p,
+.section-heading p,
+.journey-intro p {
+  font-size: 14px;
+}
+
+.step p {
+  font-size: 11px;
+}
+
+.consent {
+  font-size: 12px !important;
+}
+
+.optional,
+.form-security,
+.field-help {
+  font-size: 11px;
+}
+
+.footer-links a,
+.footer-main > p {
+  font-size: 12px;
+}
+
+.footer-bottom {
+  font-size: 11px;
+}
