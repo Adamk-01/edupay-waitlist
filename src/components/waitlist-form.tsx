@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import {
   registerWaitlist,
@@ -32,12 +33,19 @@ function getErrorMessage(error: unknown): string {
     if (error.kind === "network") {
       return "We couldn't reach EduPay. Check your connection and try again.";
     }
+    if (error.kind === "rate_limited") {
+      return "Too many attempts. Please wait a little and try again.";
+    }
+    if (error.kind === "invalid") {
+      return "Some details need checking. Please review the form and try again.";
+    }
   }
 
   return "We couldn't complete your registration. Please try again. If you have already signed up, check your inbox.";
 }
 
 export function WaitlistForm() {
+  const router = useRouter();
   const [audience, setAudience] = useState<WaitlistAudience>("student");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -80,8 +88,10 @@ export function WaitlistForm() {
     setBusy(true);
 
     try {
-      await registerWaitlist(input);
-      window.location.assign("/verify");
+      const result = await registerWaitlist(input);
+      // Only an already-verified address skips the "check your email" step.
+      // Keep the button disabled while the route transition runs.
+      router.push(result.status === "already_verified" ? "/success" : "/verify");
     } catch (submitError) {
       setError(getErrorMessage(submitError));
       submitting.current = false;
@@ -102,7 +112,7 @@ export function WaitlistForm() {
         </label>
         <label>
           Phone number <span className="optional">Optional</span>
-          <input name="phone" type="tel" autoComplete="tel" placeholder="+234 800 000 0000" maxLength={24} aria-describedby="phone-help" />
+          <input name="phone" type="tel" inputMode="tel" autoComplete="tel" placeholder="+234 800 000 0000" maxLength={24} aria-describedby="phone-help" />
           <span className="field-help" id="phone-help">Include a country code. Nigerian numbers beginning with 0 are normalized to +234.</span>
         </label>
         <label>

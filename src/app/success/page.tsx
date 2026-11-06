@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { CheckCircle2, MessageCircle, Mail, ArrowLeft } from "lucide-react";
 
 const WHATSAPP_CHANNEL =
   "https://whatsapp.com/channel/0029VbByeNR47XeEqQcE803V";
+
+export const metadata: Metadata = {
+  title: "You're on the list | EduPay Waitlist",
+  description: "Your EduPay waitlist registration is confirmed.",
+  // Only ever reached after a verified registration, so it must not be indexed.
+  robots: { index: false, follow: false }
+};
 
 export default function SuccessPage() {
   return (

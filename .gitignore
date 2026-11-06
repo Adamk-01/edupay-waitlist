@@ -5,9 +5,12 @@ node_modules/
 .next/
 out/
 
-# env files
-.env*.local
-.env.local
+# env files — ignore every .env variant, then re-allow the committed template.
+# The previous pattern (.env*.local) did NOT match a plain ".env", so a real
+# credentials file could be staged and committed in this public repository.
+.env
+.env.*
+!.env.example
 
 # build
 dist/
