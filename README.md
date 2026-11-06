@@ -203,6 +203,16 @@ it would point canonical tags and the sitemap at a throwaway host.
 
 The official EduPay WhatsApp Channel is optional: https://whatsapp.com/channel/0029VbByeNR47XeEqQcE803V
 
+## Dependency upgrades
+
+Use `npm ci` to install the versions in `package-lock.json`. The current Next.js 15 build depends on
+the TypeScript 5 compiler API; TypeScript 7 is incompatible with its configuration loader. The build
+checks this before starting and reports an actionable error. Dependabot skips major upgrades of the
+Next.js, TypeScript, ESLint, and Node types toolchain; plan and test those together as a separate
+migration. Updates within the current majors remain enabled; review security fixes that require a
+major upgrade manually. Review `npm audit` findings individually instead of running `npm audit fix
+--force`, which can install breaking major versions.
+
 ## Checks
 
 ```powershell
